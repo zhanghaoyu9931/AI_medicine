@@ -64,13 +64,12 @@ This project demonstrates a complete pipeline for medical image diagnosis (both 
 │   │   ├── grid_search_results.png     # Visualization of results
 │   │   ├── combination_X_results.json  # Individual combination results
 │   │   └── combination_X/              # Detailed results per combination
-│   ├── model_evaluation/          # Model comparison results
-│   │   ├── model_comparison_results.json  # Numerical comparison data
-│   │   ├── accuracy_comparison.png       # Accuracy comparison chart
-│   │   ├── precision_comparison.png      # Precision comparison chart
-│   │   ├── recall_comparison.png         # Recall comparison chart
-│   │   └── f1_comparison.png             # F1-score comparison chart
-│   └── confusion_matrix.png       # General confusion matrix
+│   └── model_evaluation/          # Model comparison results
+│       ├── model_comparison_results.json  # Numerical comparison data
+│       ├── accuracy_comparison.png       # Accuracy comparison chart
+│       ├── precision_comparison.png      # Precision comparison chart
+│       ├── recall_comparison.png         # Recall comparison chart
+│       └── f1_comparison.png             # F1-score comparison chart
 ├── preprocessing.py                # Image preprocessing utilities
 ├── dataset.py                     # Dataset classes and data loading
 ├── model.py                       # CNN model, training, and comparison
