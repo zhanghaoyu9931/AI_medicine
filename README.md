@@ -80,35 +80,6 @@ This project demonstrates a complete pipeline for medical image diagnosis (both 
 └── README.md                      # Project documentation
 ```
 
-## Key Features
-
-### 🔬 **Scientific Research Ready**
-- **Paper-Quality Figures**: High-resolution (300 DPI) plots with scientific formatting
-- **Professional Styling**: Times New Roman fonts, appropriate sizing for publications
-- **Standardized Metrics**: Comprehensive evaluation following research standards
-- **Reproducible Results**: Consistent random seeds and structured outputs
-
-### 🤖 **Advanced Model Comparison**
-- **Multi-Model Benchmarking**: Compare CNN with traditional ML methods
-- **Feature Extraction**: Use CNN as feature extractor for traditional models
-- **Performance Metrics**: 
-  - Classification: Accuracy, Precision, Recall, F1, AUC, AUPR
-  - Regression: MSE, MAE, R²
-- **Visualization**: Side-by-side performance comparison charts
-
-### 🎯 **Enhanced Usability**
-- **Debug Control**: Toggle detailed logging with `debug` parameter
-- **Class Name Mapping**: Custom class names for better interpretability
-- **Modular Design**: Each component separated for easy understanding
-- **Educational Focus**: Detailed comments and explanations
-
-### 📊 **Professional Visualization**
-- **ROC Curves**: Multi-model ROC comparison with AUC scores
-- **Precision-Recall Curves**: AUPR analysis for imbalanced datasets
-- **Bar Charts**: Individual metric comparisons across models
-- **Confusion Matrix**: Enhanced with custom class names
-- **Compact Layout**: Optimized for scientific publications
-
 ## Getting Started
 
 ### 1. Installation
@@ -127,6 +98,25 @@ pip install -r requirements.txt
 ```python
 # Run main.ipynb in Jupyter Notebook
 # Follow the step-by-step demonstration
+```
+
+#### For Classification Tasks
+```python
+# Configure for binary classification
+config = {
+    'task_type': 'classification',
+    'num_classes': 2,
+    'class_names': {0: 'Healthy', 1: 'Diseased'}
+}
+```
+
+#### For Regression Tasks
+```python
+# Configure for regression
+config = {
+    'task_type': 'regression',
+    'target_variable': 'age'  # or any continuous variable
+}
 ```
 
 #### Advanced Configuration
@@ -152,7 +142,7 @@ comparison_results = compare_models_performance(
 
 ## Model Comparison Features
 
-### Supported Models
+### 🤖 Supported Models
 - **Deep Learning**: Custom CNN architecture
 - **Traditional ML**: 
   - Support Vector Machine (SVM)
@@ -160,7 +150,7 @@ comparison_results = compare_models_performance(
   - Logistic Regression
   - Linear Regression (for regression tasks)
 
-### Generated Outputs
+### 📊 Generated Outputs
 - **Figures** (saved to `./results/model_evaluation/`):
   - `aupr_comparison.png` - Precision-Recall curves
   - `auc_comparison.png` - ROC curves  
@@ -170,41 +160,13 @@ comparison_results = compare_models_performance(
   - `f1_comparison.png` - F1-score comparison
   - `model_comparison_results.json` - Numerical results
 
-### Scientific Paper Integration
+### 🎯 Scientific Paper Integration
 All figures are optimized for direct use in scientific papers:
 - **High Resolution**: 300 DPI for print quality
 - **Professional Fonts**: Times New Roman serif fonts
 - **Compact Size**: 4×3 inches for bar charts, 6×5 for curves
 - **Clean Styling**: Minimal, professional aesthetics
 - **Proper Labeling**: Bold labels and appropriate sizing
-
-## Usage Examples
-
-### For Classification Tasks
-```python
-# Configure for binary classification
-config = {
-    'task_type': 'classification',
-    'num_classes': 2,
-    'class_names': {0: 'Healthy', 1: 'Diseased'}
-}
-```
-
-### For Regression Tasks
-```python
-# Configure for regression
-config = {
-    'task_type': 'regression',
-    'target_variable': 'age'  # or any continuous variable
-}
-```
-
-### Debug Mode
-```python
-# Enable detailed logging for troubleshooting
-DEBUG_MODE = True
-results = compare_models_performance(..., debug=DEBUG_MODE)
-```
 
 ## Educational Applications
 
@@ -259,11 +221,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 If you use this code in your research, please cite:
 ```bibtex
-@software{medical_image_classification,
-  title={Medical Image Classification using Deep Learning},
-  author={YP Scholar},
-  year={2024},
-  url={https://github.com/your-repo-url}
+@software{AI_medicine,
+  title={When AI meets medicine – algorithms are transforming healthcare issues},
+  author={Hauser Zhang},
+  year={2025},
+  url={https://github.com/zhanghaoyu9931/AI_medicine}
 }
 ```
 
