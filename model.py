@@ -18,6 +18,7 @@ from sklearn.svm import SVC, SVR
 from sklearn.linear_model import LogisticRegression, LinearRegression
 import seaborn as sns
 from itertools import product
+from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -117,7 +118,11 @@ class ModelTrainer:
         all_preds = []
         all_labels = []
         
-        for images, labels in train_loader:
+        # Add progress bar for training
+        train_pbar = tqdm(train_loader, desc='Training', leave=False, 
+                         bar_format='{l_bar}{bar:30}{r_bar}', ncols=100)
+        
+        for images, labels in train_pbar:
             images, labels = images.to(self.device), labels.to(self.device)
             
             # Forward pass
@@ -132,6 +137,7 @@ class ModelTrainer:
             self.optimizer.step()
             
             total_loss += loss.item()
+            current_loss = total_loss / (len(all_preds) // len(images) + 1)
             
             # Store predictions and labels
             if self.task_type == 'classification':
@@ -140,6 +146,9 @@ class ModelTrainer:
                 predicted = outputs
             all_preds.extend(predicted.cpu().detach().numpy())
             all_labels.extend(labels.cpu().numpy())
+            
+            # Update progress bar with current loss
+            train_pbar.set_postfix({'Loss': f'{current_loss:.4f}'})
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
@@ -154,8 +163,12 @@ class ModelTrainer:
         all_preds = []
         all_labels = []
         
+        # Add progress bar for validation
+        val_pbar = tqdm(val_loader, desc='Validation', leave=False, 
+                       bar_format='{l_bar}{bar:30}{r_bar}', ncols=100)
+        
         with torch.no_grad():
-            for images, labels in val_loader:
+            for images, labels in val_pbar:
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
                 if self.task_type == 'regression':
@@ -163,6 +176,7 @@ class ModelTrainer:
                 loss = self.criterion(outputs, labels)
                 
                 total_loss += loss.item()
+                current_loss = total_loss / (len(all_preds) // len(images) + 1)
                 
                 # Store predictions and labels
                 if self.task_type == 'classification':
@@ -171,6 +185,9 @@ class ModelTrainer:
                     predicted = outputs
                 all_preds.extend(predicted.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                
+                # Update progress bar with current loss
+                val_pbar.set_postfix({'Loss': f'{current_loss:.4f}'})
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
@@ -217,7 +234,10 @@ class ModelTrainer:
         best_val_loss = float('inf')
         patience_counter = 0
         
-        for epoch in range(num_epochs):
+        # Add progress bar for epochs
+        epoch_pbar = tqdm(range(num_epochs), desc='Epochs', position=0)
+        
+        for epoch in epoch_pbar:
             # Train
             train_loss, train_metrics = self.train_epoch(train_loader)
             self.train_losses.append(train_loss)
@@ -228,7 +248,23 @@ class ModelTrainer:
             self.val_losses.append(val_loss)
             self.val_metrics.append(val_metrics)
             
-            print(f'Epoch [{epoch+1}/{num_epochs}]')
+            # Update epoch progress bar with metrics
+            if self.task_type == 'classification':
+                epoch_pbar.set_postfix({
+                    'Train Loss': f'{train_loss:.4f}',
+                    'Val Loss': f'{val_loss:.4f}',
+                    'Train Acc': f'{train_metrics.get("accuracy", 0):.3f}',
+                    'Val Acc': f'{val_metrics.get("accuracy", 0):.3f}'
+                })
+            else:
+                epoch_pbar.set_postfix({
+                    'Train Loss': f'{train_loss:.4f}',
+                    'Val Loss': f'{val_loss:.4f}',
+                    'Train R²': f'{train_metrics.get("r2", 0):.3f}',
+                    'Val R²': f'{val_metrics.get("r2", 0):.3f}'
+                })
+            
+            print(f'\nEpoch [{epoch+1}/{num_epochs}]')
             print(f'Train Loss: {train_loss:.4f}, Train Metrics: {train_metrics}')
             print(f'Val Loss: {val_loss:.4f}, Val Metrics: {val_metrics}')
             
@@ -237,6 +273,7 @@ class ModelTrainer:
                 best_val_loss = val_loss
                 patience_counter = 0
                 self.save_model(save_dir, 'best_model.pth')
+                print(f'New best model saved with validation loss: {val_loss:.4f}')
             else:
                 patience_counter += 1
             
@@ -321,8 +358,12 @@ class ModelTrainer:
         all_preds = []
         all_labels = []
         
+        # Add progress bar for evaluation
+        eval_pbar = tqdm(test_loader, desc='Evaluating', 
+                        bar_format='{l_bar}{bar:30}{r_bar}', ncols=100)
+        
         with torch.no_grad():
-            for images, labels in test_loader:
+            for images, labels in eval_pbar:
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
                 if self.task_type == 'regression':
@@ -335,6 +376,9 @@ class ModelTrainer:
                 
                 all_preds.extend(predicted.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                
+                # Update progress
+                eval_pbar.set_postfix({'Samples': f'{len(all_preds)}/{len(test_loader.dataset)}'})
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
@@ -371,8 +415,12 @@ class ModelTrainer:
             print(f"Model is on device: {next(self.model.parameters()).device}")
             print(f"Task type: {self.task_type}")
         
+        # Add progress bar for predictions
+        pred_pbar = tqdm(test_loader, desc='Getting Predictions', leave=False,
+                        bar_format='{l_bar}{bar:30}{r_bar}', ncols=100)
+        
         with torch.no_grad():
-            for batch_idx, (images, labels) in enumerate(test_loader):
+            for batch_idx, (images, labels) in enumerate(pred_pbar):
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
                 
@@ -420,8 +468,12 @@ def extract_features_for_ml(model: nn.Module, data_loader: DataLoader, device: t
     if debug:
         print(f"Extracting features from model on device: {device}")
     
+    # Add progress bar for feature extraction
+    feature_pbar = tqdm(data_loader, desc='Extracting Features', leave=False,
+                       bar_format='{l_bar}{bar:30}{r_bar}', ncols=100)
+    
     with torch.no_grad():
-        for batch_idx, (images, targets) in enumerate(data_loader):
+        for batch_idx, (images, targets) in enumerate(feature_pbar):
             images = images.to(device)
             
             if debug and batch_idx == 0:  # Debug first batch
