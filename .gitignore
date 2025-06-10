@@ -161,5 +161,7 @@ cython_debug/
 
 results/
 data/
+download/
 generate_dataset.py
 main_this.ipynb
+.DS_Store
