@@ -83,6 +83,73 @@ class MedicalCNN(nn.Module):
         x = self.fc_layers(x)
         return x
 
+class ECG1DCNN(nn.Module):
+    """1D CNN model for ECG signal classification/regression."""
+    def __init__(
+        self,
+        task_type: Literal['classification', 'regression'],
+        input_length: int = 50000,
+        num_classes: int = 2,
+        num_conv_layers: int = 4,
+        conv_channels: int = 32,
+        kernel_size: int = 7,
+        pool_size: int = 2,
+        fc_layers: List[int] = [512, 128]
+    ):
+        super(ECG1DCNN, self).__init__()
+        
+        # Build 1D convolutional layers
+        conv_modules = []
+        in_channels = 1  # Single ECG channel
+        
+        for _ in range(num_conv_layers):
+            conv_modules.extend([
+                nn.Conv1d(in_channels, conv_channels, kernel_size=kernel_size, stride=1, padding=kernel_size//2),
+                nn.BatchNorm1d(conv_channels),
+                nn.ReLU(),
+                nn.MaxPool1d(pool_size),
+                nn.Dropout(0.2)
+            ])
+            in_channels = conv_channels
+            # Double channels every second layer
+            if len(conv_modules) % 10 == 0:  # Every 2 conv layers (5 modules each)
+                conv_channels = min(conv_channels * 2, 512)
+        
+        self.conv_layers = nn.Sequential(*conv_modules)
+        
+        # Calculate the size of flattened features
+        # After num_conv_layers maxpool operations, length is divided by pool_size^num_conv_layers
+        feature_length = input_length // (pool_size ** num_conv_layers)
+        flattened_size = conv_channels * feature_length
+        
+        # Build fully connected layers
+        fc_modules = []
+        prev_size = flattened_size
+        
+        for fc_size in fc_layers:
+            fc_modules.extend([
+                nn.Linear(prev_size, fc_size),
+                nn.ReLU(),
+                nn.Dropout(0.5)
+            ])
+            prev_size = fc_size
+        
+        # Add final layer based on task type
+        if task_type == 'classification':
+            fc_modules.append(nn.Linear(fc_layers[-1], num_classes))
+        else:  # regression
+            fc_modules.append(nn.Linear(fc_layers[-1], 1))
+        
+        self.fc_layers = nn.Sequential(*fc_modules)
+        self.task_type = task_type
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (batch_size, 1, sequence_length)
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc_layers(x)
+        return x
+
 class ModelTrainer:
     """Class to handle model training and evaluation."""
     def __init__(

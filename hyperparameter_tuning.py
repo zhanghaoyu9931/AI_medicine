@@ -13,20 +13,24 @@ from model import MedicalCNN, ModelTrainer
 import numpy as np
 
 class HyperparameterTuner:
-    """Class for performing grid search over hyperparameters."""
+    """Universal class for performing grid search over different model types."""
     def __init__(
         self,
         train_loader: DataLoader,
         val_loader: DataLoader,
         task_type: Literal['classification', 'regression'],
+        model_type: Literal['image', 'ECG'] = 'image',  # Future: add 'image3d', 'rnn', 'transformer', etc.
         num_classes: int = 2,
+        input_length: int = 5000,  # For ECG and other sequence models
         device: torch.device = None,
         save_dir: str = './grid_search_results'
     ):
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.task_type = task_type
+        self.model_type = model_type
         self.num_classes = num_classes
+        self.input_length = input_length
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
@@ -34,14 +38,35 @@ class HyperparameterTuner:
         self.results: List[Dict[str, Any]] = []
         
     def _create_model(self, params: Dict[str, Any]) -> Tuple[nn.Module, nn.Module, optim.Optimizer]:
-        """Create model, criterion and optimizer with given parameters."""
-        model = MedicalCNN(
-            task_type=self.task_type,
-            num_classes=self.num_classes,
-            num_conv_layers=params['num_conv_layers'],
-            conv_channels=params['conv_channels'],
-            fc_layers=params['fc_layers']
-        )
+        """Create model, criterion and optimizer with given parameters based on model type."""
+        # Create model based on model type
+        if self.model_type == 'image':
+            model = MedicalCNN(
+                task_type=self.task_type,
+                num_classes=self.num_classes,
+                num_conv_layers=params['num_conv_layers'],
+                conv_channels=params['conv_channels'],
+                fc_layers=params['fc_layers']
+            )
+        elif self.model_type == 'ECG':
+            from model import ECG1DCNN
+            model = ECG1DCNN(
+                task_type=self.task_type,
+                num_classes=self.num_classes,
+                input_length=self.input_length,
+                num_conv_layers=params['num_conv_layers'],
+                conv_channels=params['conv_channels'],
+                fc_layers=params['fc_layers']
+            )
+        # TODO: Add support for future model types here
+        # elif self.model_type == 'image3d':
+        #     model = Medical3DCNN(...)
+        # elif self.model_type == 'rnn':
+        #     model = MedicalRNN(...)
+        # elif self.model_type == 'transformer':
+        #     model = MedicalTransformer(...)
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: 'image', 'ECG'")
         
         # Define loss function based on task type
         if self.task_type == 'classification':
@@ -182,4 +207,6 @@ class HyperparameterTuner:
             raise ValueError("No results available. Run grid_search first.")
         
         best_result = min(self.results, key=lambda x: x['best_val_loss'])
-        return best_result 
+        return best_result
+
+ 

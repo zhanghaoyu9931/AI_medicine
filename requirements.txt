@@ -74,3 +74,4 @@ zipp==3.21.0
 scikit-learn
 seaborn
 ipykernel
+wfdb==3.4.1

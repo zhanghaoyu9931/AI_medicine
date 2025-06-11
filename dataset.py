@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import pandas as pd
 from typing import Tuple, List, Dict, Union, Literal
+from pathlib import Path
 import json
 
 class MedicalImageDataset(Dataset):
@@ -65,6 +66,64 @@ class MedicalImageDataset(Dataset):
             
         return image, label
 
+class ECGDataset(Dataset):
+    """Custom Dataset for loading ECG signals."""
+    def __init__(
+        self, 
+        data_dir: str, 
+        labels_file: str, 
+        task_type: Literal['classification', 'regression'], 
+        transform=None
+    ):
+        self.data_dir = Path(data_dir)
+        self.task_type = task_type
+        self.transform = transform
+        
+        # Load labels
+        self.labels_df = pd.read_csv(labels_file)
+        self.labels_df['id'] = self.labels_df['id'].astype(str)
+        self.labels_df.set_index('id', inplace=True)
+        
+        # Get ECG files and their corresponding labels
+        self.ecg_files = []
+        self.labels = []
+        
+        for filename in self.data_dir.glob('*.npy'):
+            # Get ECG ID (filename without extension)
+            ecg_id = filename.stem
+            
+            # Check if label exists for this ECG
+            if ecg_id in self.labels_df.index:
+                self.ecg_files.append(filename)
+                self.labels.append(self.labels_df.loc[ecg_id, 'y'])
+    
+    def __len__(self) -> int:
+        return len(self.ecg_files)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Union[int, float]]:
+        ecg_path = self.ecg_files[idx]
+        
+        # Load ECG signal
+        ecg_signal = np.load(ecg_path)
+        
+        # Convert to tensor and add channel dimension for 1D CNN
+        ecg_signal = torch.tensor(ecg_signal, dtype=torch.float32).unsqueeze(0)  # (1, length)
+        
+        # Apply transform if any (for ECG this could be additional normalization)
+        if self.transform:
+            ecg_signal = self.transform(ecg_signal)
+        
+        # Get label
+        label = self.labels[idx]
+        
+        # Convert label to tensor
+        if self.task_type == 'classification':
+            label = torch.tensor(label, dtype=torch.long)
+        else:  # regression
+            label = torch.tensor(label, dtype=torch.float32)
+        
+        return ecg_signal, label
+
 def get_transforms() -> Dict[str, transforms.Compose]:
     """Get train and validation transforms."""
     train_transform = transforms.Compose([
@@ -84,6 +143,18 @@ def get_transforms() -> Dict[str, transforms.Compose]:
         'train': train_transform,
         'val': val_transform,
         'test': val_transform
+    }
+
+def get_ecg_transforms() -> Dict[str, torch.nn.Module]:
+    """Get ECG-specific transforms (currently identity transforms)."""
+    # For ECG data, we typically don't apply the same transforms as images
+    # These could be signal-specific augmentations in the future
+    identity_transform = torch.nn.Identity()
+    
+    return {
+        'train': identity_transform,
+        'val': identity_transform,
+        'test': identity_transform
     }
 
 def create_data_loaders(
@@ -150,6 +221,45 @@ def create_data_loaders(
         'val': val_loader,
         'test': test_loader
     }
+
+def create_ecg_data_loaders(
+    data_dir: str,
+    labels_file: str,
+    task_type: Literal['classification', 'regression'],
+    batch_size: int = 32,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    num_workers: int = 4,
+    random_seed: int = 42
+) -> Dict[str, DataLoader]:
+    """Create ECG data loaders."""
+    # Set random seed
+    torch.manual_seed(random_seed)
+    np.random.seed(random_seed)
+    
+    # Create dataset
+    dataset = ECGDataset(data_dir, labels_file, task_type)
+    
+    # Calculate split sizes
+    total_size = len(dataset)
+    train_size = int(train_ratio * total_size)
+    val_size = int(val_ratio * total_size)
+    test_size = total_size - train_size - val_size
+    
+    # Split dataset
+    train_dataset, val_dataset, test_dataset = random_split(
+        dataset,
+        [train_size, val_size, test_size],
+        generator=torch.Generator().manual_seed(random_seed)
+    )
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    
+    return {'train': train_loader, 'val': val_loader, 'test': test_loader}
 
 def save_dataset_info(
     data_loaders: Dict[str, DataLoader],
