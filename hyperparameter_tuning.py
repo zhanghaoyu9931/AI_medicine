@@ -19,7 +19,7 @@ class HyperparameterTuner:
         train_loader: DataLoader,
         val_loader: DataLoader,
         task_type: Literal['classification', 'regression'],
-        model_type: Literal['image', 'ECG'] = 'image',  # Future: add 'image3d', 'rnn', 'transformer', etc.
+        model_type: Literal['image', 'ECG', 'voice'] = 'image',  # Future: add 'image3d', 'rnn', 'transformer', etc.
         num_classes: int = 2,
         input_length: int = 5000,  # For ECG and other sequence models
         device: torch.device = None,
@@ -58,6 +58,16 @@ class HyperparameterTuner:
                 conv_channels=params['conv_channels'],
                 fc_layers=params['fc_layers']
             )
+        elif self.model_type == 'voice':
+            from model import Voice1DCNN
+            model = Voice1DCNN(
+                task_type=self.task_type,
+                num_classes=self.num_classes,
+                input_length=self.input_length,
+                num_conv_layers=params['num_conv_layers'],
+                conv_channels=params['conv_channels'],
+                fc_layers=params['fc_layers']
+            )
         # TODO: Add support for future model types here
         # elif self.model_type == 'image3d':
         #     model = Medical3DCNN(...)
@@ -66,7 +76,7 @@ class HyperparameterTuner:
         # elif self.model_type == 'transformer':
         #     model = MedicalTransformer(...)
         else:
-            raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: 'image', 'ECG'")
+            raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: 'image', 'ECG', 'voice'")
         
         # Define loss function based on task type
         if self.task_type == 'classification':

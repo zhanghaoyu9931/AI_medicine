@@ -75,6 +75,23 @@ class MedicalCNN(nn.Module):
         self.fc_layers = nn.Sequential(*fc_modules)
         self.task_type = task_type
         
+        # Initialize weights
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize model weights for better convergence."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # He initialization for ReLU activation
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 3:  # If input is (batch_size, height, width)
             x = x.unsqueeze(1)  # Add channel dimension -> (batch_size, 1, height, width)
@@ -143,6 +160,119 @@ class ECG1DCNN(nn.Module):
         self.fc_layers = nn.Sequential(*fc_modules)
         self.task_type = task_type
         
+        # Initialize weights
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize model weights for better convergence."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                # He initialization for ReLU activation
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                # Initialize batch norm parameters
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (batch_size, 1, sequence_length)
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc_layers(x)
+        return x
+
+class Voice1DCNN(nn.Module):
+    """1D CNN model for voice signal classification/regression."""
+    def __init__(
+        self,
+        task_type: Literal['classification', 'regression'],
+        input_length: int = 5000,  # Changed to 5000 points
+        num_classes: int = 2,
+        num_conv_layers: int = 4,
+        conv_channels: int = 32,
+        kernel_size: int = 7,
+        pool_size: int = 2,
+        fc_layers: List[int] = [512, 128]
+    ):
+        super(Voice1DCNN, self).__init__()
+        
+        # Build 1D convolutional layers optimized for voice signals
+        conv_modules = []
+        in_channels = 1  # Single voice channel
+        
+        for i in range(num_conv_layers):
+            # Use larger kernels for early layers to capture broader patterns
+            current_kernel = kernel_size if i < 2 else max(3, kernel_size // 2)
+            
+            conv_modules.extend([
+                nn.Conv1d(in_channels, conv_channels, kernel_size=current_kernel, 
+                         stride=1, padding=current_kernel//2),
+                nn.BatchNorm1d(conv_channels),
+                nn.ReLU(),
+                nn.MaxPool1d(pool_size),
+                nn.Dropout(0.2)
+            ])
+            in_channels = conv_channels
+            # Increase channels progressively
+            if i % 2 == 1:  # Every second layer
+                conv_channels = min(conv_channels * 2, 256)
+        
+        self.conv_layers = nn.Sequential(*conv_modules)
+        
+        # Calculate the size of flattened features
+        # After num_conv_layers maxpool operations, length is divided by pool_size^num_conv_layers
+        feature_length = input_length // (pool_size ** num_conv_layers)
+        flattened_size = conv_channels * feature_length
+        
+        # Build fully connected layers
+        fc_modules = []
+        prev_size = flattened_size
+        
+        for fc_size in fc_layers:
+            fc_modules.extend([
+                nn.Linear(prev_size, fc_size),
+                nn.ReLU(),
+                nn.Dropout(0.5)
+            ])
+            prev_size = fc_size
+        
+        # Add final layer based on task type
+        if task_type == 'classification':
+            fc_modules.append(nn.Linear(fc_layers[-1], num_classes))
+        else:  # regression
+            fc_modules.append(nn.Linear(fc_layers[-1], 1))
+        
+        self.fc_layers = nn.Sequential(*fc_modules)
+        self.task_type = task_type
+        
+        # Initialize weights
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize model weights for better convergence."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                # He initialization for ReLU activation
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                # Initialize batch norm parameters
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x shape: (batch_size, 1, sequence_length)
         x = self.conv_layers(x)
@@ -169,10 +299,95 @@ class ModelTrainer:
         self.class_names = class_names  # 添加类别名称映射
         self.model.to(device)
         
+        # Add learning rate scheduler for better convergence (only if optimizer exists)
+        if self.optimizer is not None:
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=3, verbose=True
+            )
+        else:
+            self.scheduler = None
+        
+        # Additional initialization optimizations
+        self._optimize_for_training()
+        
         self.train_losses: List[float] = []
         self.val_losses: List[float] = []
         self.train_metrics: List[Dict[str, float]] = []
         self.val_metrics: List[Dict[str, float]] = []
+        
+    def _optimize_for_training(self):
+        """Additional optimizations for better training convergence."""
+        # Set model to training mode for proper initialization
+        self.model.train()
+        
+        # Enable gradient computation for initialization
+        for param in self.model.parameters():
+            if param.requires_grad:
+                # Ensure gradients are properly initialized
+                if param.grad is not None:
+                    param.grad.zero_()
+        
+        # Set model back to evaluation mode
+        self.model.eval()
+        
+    def create_optimized_optimizer(self, learning_rate: float = 0.001, weight_decay: float = 1e-4):
+        """Create an optimized optimizer with weight decay for better convergence."""
+        # Use AdamW optimizer with weight decay for better regularization
+        optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+        
+        # Update the scheduler with the new optimizer
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=3, verbose=True
+        )
+        
+        return optimizer
+        
+    def get_current_lr(self) -> float:
+        """Get current learning rate."""
+        if self.optimizer is not None:
+            return self.optimizer.param_groups[0]['lr']
+        return 0.0
+        
+    def upgrade_to_optimized_optimizer(self, learning_rate: float = None, weight_decay: float = 1e-4):
+        """
+        Optional method to upgrade the current optimizer to AdamW with weight decay.
+        This can be called after creating the trainer to get better convergence.
+        
+        Args:
+            learning_rate: New learning rate (if None, keeps current LR)
+            weight_decay: Weight decay for regularization
+        """
+        if self.optimizer is None:
+            print("Warning: No optimizer to upgrade")
+            return
+            
+        # Get current learning rate if not specified
+        if learning_rate is None:
+            learning_rate = self.get_current_lr()
+        
+        # Create new AdamW optimizer
+        new_optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+        
+        # Update scheduler
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            new_optimizer, mode='min', factor=0.5, patience=3, verbose=True
+        )
+        
+        # Replace optimizer
+        self.optimizer = new_optimizer
+        print(f"Upgraded to AdamW optimizer with LR={learning_rate}, weight_decay={weight_decay}")
         
     def set_class_names(self, class_names: Dict[int, str]) -> None:
         """Set class names for classification tasks."""
@@ -199,9 +414,14 @@ class ModelTrainer:
             loss = self.criterion(outputs, labels)
             
             # Backward pass and optimize
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            if self.optimizer is not None:
+                self.optimizer.zero_grad()
+                loss.backward()
+                
+                # Gradient clipping to prevent gradient explosion
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
+                self.optimizer.step()
             
             total_loss += loss.item()
             current_loss = total_loss / (len(all_preds) // len(images) + 1)
@@ -211,8 +431,13 @@ class ModelTrainer:
                 _, predicted = outputs.max(1)
             else:
                 predicted = outputs
-            all_preds.extend(predicted.cpu().detach().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            
+            # Convert to numpy arrays and ensure they are 1D
+            predicted_np = predicted.detach().cpu().numpy().flatten()
+            labels_np = labels.detach().cpu().numpy().flatten()
+            
+            all_preds.extend(predicted_np)
+            all_labels.extend(labels_np)
             
             # Update progress bar with current loss
             train_pbar.set_postfix({'Loss': f'{current_loss:.4f}'})
@@ -250,8 +475,13 @@ class ModelTrainer:
                     _, predicted = outputs.max(1)
                 else:
                     predicted = outputs
-                all_preds.extend(predicted.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                
+                # Convert to numpy arrays and ensure they are 1D
+                predicted_np = predicted.detach().cpu().numpy().flatten()
+                labels_np = labels.detach().cpu().numpy().flatten()
+                
+                all_preds.extend(predicted_np)
+                all_labels.extend(labels_np)
                 
                 # Update progress bar with current loss
                 val_pbar.set_postfix({'Loss': f'{current_loss:.4f}'})
@@ -270,22 +500,50 @@ class ModelTrainer:
         """Calculate metrics based on task type."""
         metrics = {}
         
+        # Convert to numpy arrays and ensure they are 1D
+        labels_array = np.array(labels).flatten()
+        preds_array = np.array(preds).flatten()
+        
+        # Check if arrays are empty
+        if len(labels_array) == 0 or len(preds_array) == 0:
+            print("Warning: Empty labels or predictions array")
+            return metrics
+        
         if self.task_type == 'classification':
             # Classification metrics
-            metrics['accuracy'] = np.mean(np.array(labels) == np.array(preds))
-            metrics['precision'] = precision_score(labels, preds, average='weighted')
-            metrics['recall'] = recall_score(labels, preds, average='weighted')
-            metrics['f1'] = f1_score(labels, preds, average='weighted')
+            metrics['accuracy'] = np.mean(labels_array == preds_array)
             
-            # Calculate AUPR and AUC for binary classification
-            if len(np.unique(labels)) == 2:
-                metrics['aupr'] = average_precision_score(labels, preds)
-                metrics['auc'] = roc_auc_score(labels, preds)
+            # Ensure labels and predictions are integers for sklearn metrics
+            labels_int = labels_array.astype(int)
+            preds_int = preds_array.astype(int)
+            
+            try:
+                metrics['precision'] = precision_score(labels_int, preds_int, average='weighted', zero_division=0)
+                metrics['recall'] = recall_score(labels_int, preds_int, average='weighted', zero_division=0)
+                metrics['f1'] = f1_score(labels_int, preds_int, average='weighted', zero_division=0)
+                
+                # Calculate AUPR and AUC for binary classification
+                if len(np.unique(labels_int)) == 2:
+                    metrics['aupr'] = average_precision_score(labels_int, preds_int)
+                    metrics['auc'] = roc_auc_score(labels_int, preds_int)
+            except Exception as e:
+                print(f"Warning: Error calculating classification metrics: {e}")
+                # Set default values
+                metrics['precision'] = 0.0
+                metrics['recall'] = 0.0
+                metrics['f1'] = 0.0
         else:
             # Regression metrics
-            metrics['mse'] = mean_squared_error(labels, preds)
-            metrics['mae'] = mean_absolute_error(labels, preds)
-            metrics['r2'] = r2_score(labels, preds)
+            try:
+                metrics['mse'] = mean_squared_error(labels_array, preds_array)
+                metrics['mae'] = mean_absolute_error(labels_array, preds_array)
+                metrics['r2'] = r2_score(labels_array, preds_array)
+            except Exception as e:
+                print(f"Warning: Error calculating regression metrics: {e}")
+                # Set default values
+                metrics['mse'] = float('inf')
+                metrics['mae'] = float('inf')
+                metrics['r2'] = 0.0
         
         return metrics
     
@@ -321,14 +579,16 @@ class ModelTrainer:
                     'Train Loss': f'{train_loss:.4f}',
                     'Val Loss': f'{val_loss:.4f}',
                     'Train Acc': f'{train_metrics.get("accuracy", 0):.3f}',
-                    'Val Acc': f'{val_metrics.get("accuracy", 0):.3f}'
+                    'Val Acc': f'{val_metrics.get("accuracy", 0):.3f}',
+                    'LR': f'{self.get_current_lr():.6f}'
                 })
             else:
                 epoch_pbar.set_postfix({
                     'Train Loss': f'{train_loss:.4f}',
                     'Val Loss': f'{val_loss:.4f}',
                     'Train R²': f'{train_metrics.get("r2", 0):.3f}',
-                    'Val R²': f'{val_metrics.get("r2", 0):.3f}'
+                    'Val R²': f'{val_metrics.get("r2", 0):.3f}',
+                    'LR': f'{self.get_current_lr():.6f}'
                 })
             
             print(f'\nEpoch [{epoch+1}/{num_epochs}]')
@@ -343,6 +603,10 @@ class ModelTrainer:
                 print(f'New best model saved with validation loss: {val_loss:.4f}')
             else:
                 patience_counter += 1
+            
+            # Update learning rate scheduler
+            if self.scheduler is not None:
+                self.scheduler.step(val_loss)
             
             # Early stopping
             if patience_counter >= early_stopping_patience:
@@ -363,18 +627,29 @@ class ModelTrainer:
     def save_model(self, save_dir: str, filename: str) -> None:
         """Save model state."""
         Path(save_dir).mkdir(parents=True, exist_ok=True)
-        torch.save({
+        
+        # Prepare state dict
+        state_dict = {
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
             'task_type': self.task_type,
             'class_names': self.class_names
-        }, Path(save_dir) / filename)
+        }
+        
+        # Add optimizer state if available
+        if self.optimizer is not None:
+            state_dict['optimizer_state_dict'] = self.optimizer.state_dict()
+        
+        torch.save(state_dict, Path(save_dir) / filename)
     
     def load_model(self, model_path: str) -> None:
         """Load model state."""
         checkpoint = torch.load(model_path)
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Load optimizer state if available and optimizer exists
+        if 'optimizer_state_dict' in checkpoint and self.optimizer is not None:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
         self.task_type = checkpoint['task_type']
         if 'class_names' in checkpoint:
             self.class_names = checkpoint['class_names']
@@ -387,6 +662,10 @@ class ModelTrainer:
     
     def plot_training_history(self, save_dir: str) -> None:
         """Plot training history."""
+        if not self.train_losses or not self.val_losses:
+            print("Warning: No training history to plot")
+            return
+            
         plt.figure(figsize=(15, 5))
         
         # Plot losses
@@ -406,14 +685,19 @@ class ModelTrainer:
         
         for i, metric in enumerate(metrics, 2):
             plt.subplot(1, 3, i)
-            train_metric = [m[metric] for m in self.train_metrics]
-            val_metric = [m[metric] for m in self.val_metrics]
-            plt.plot(train_metric, label=f'Train {metric.upper()}')
-            plt.plot(val_metric, label=f'Val {metric.upper()}')
-            # plt.title(f'Training and Validation {metric.upper()}')
-            plt.xlabel('Epoch')
-            plt.ylabel(metric.upper())
-            plt.legend()
+            try:
+                train_metric = [m.get(metric, 0.0) for m in self.train_metrics]
+                val_metric = [m.get(metric, 0.0) for m in self.val_metrics]
+                plt.plot(train_metric, label=f'Train {metric.upper()}')
+                plt.plot(val_metric, label=f'Val {metric.upper()}')
+                # plt.title(f'Training and Validation {metric.upper()}')
+                plt.xlabel('Epoch')
+                plt.ylabel(metric.upper())
+                plt.legend()
+            except Exception as e:
+                print(f"Warning: Error plotting {metric}: {e}")
+                plt.text(0.5, 0.5, f'Error plotting {metric}', 
+                        ha='center', va='center', transform=plt.gca().transAxes)
         
         plt.tight_layout()
         plt.savefig(Path(save_dir) / 'training_history.png')
@@ -441,8 +725,12 @@ class ModelTrainer:
                 else:
                     predicted = outputs
                 
-                all_preds.extend(predicted.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                # Convert to numpy arrays and ensure they are 1D
+                predicted_np = predicted.detach().cpu().numpy().flatten()
+                labels_np = labels.detach().cpu().numpy().flatten()
+                
+                all_preds.extend(predicted_np)
+                all_labels.extend(labels_np)
                 
                 # Update progress
                 eval_pbar.set_postfix({'Samples': f'{len(all_preds)}/{len(test_loader.dataset)}'})
@@ -501,8 +789,8 @@ class ModelTrainer:
                 if self.task_type == 'classification':
                     probs = torch.softmax(outputs, dim=1)
                     _, predicted = outputs.max(1)
-                    all_probs.extend(probs.cpu().numpy())
-                    all_preds.extend(predicted.cpu().numpy())
+                    all_probs.extend(probs.cpu().numpy())  # Keep 2D shape for probabilities
+                    all_preds.extend(predicted.detach().cpu().numpy().flatten())
                     
                     if debug and batch_idx == 0:  # Debug first batch
                         print(f"First batch - Probs shape: {probs.shape}")
@@ -510,10 +798,10 @@ class ModelTrainer:
                         print(f"First batch - Predicted sample: {predicted[:5]}")
                 else:
                     outputs = outputs.squeeze()
-                    all_preds.extend(outputs.cpu().numpy())
-                    all_probs.extend(outputs.cpu().numpy())  # For regression, probs are the same as predictions
+                    all_preds.extend(outputs.cpu().numpy().flatten())
+                    all_probs.extend(outputs.cpu().numpy().flatten())  # For regression, probs are the same as predictions
                 
-                all_labels.extend(labels.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy().flatten())
         
         all_labels = np.array(all_labels)
         all_preds = np.array(all_preds)
@@ -571,7 +859,7 @@ def extract_features_for_ml(model: nn.Module, data_loader: DataLoader, device: t
                 print(f"Features sample (first 5 dims): {x[0, :5]}")
             
             features.extend(x.cpu().numpy())
-            labels.extend(targets.cpu().numpy())
+            labels.extend(targets.cpu().numpy().flatten())
     
     features_array = np.array(features)
     labels_array = np.array(labels)

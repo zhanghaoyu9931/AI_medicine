@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Union
 import matplotlib.pyplot as plt
 import struct
 from scipy import signal
@@ -402,4 +402,564 @@ def visualize_ecg_preprocessing(dat_file, hea_file, max_length=5000, start_thres
     print(f"Valid range: {len(valid_signal):,} samples ({valid_duration:.1f}s, {len(valid_signal)/len(raw_complete)*100:.1f}%)")
     print(f"Processed: {len(processed_signal)} samples from valid range")
     print(f"Valid signal compression ratio: {len(valid_signal)/len(processed_signal):.1f}:1")
+
+# ============================================================================
+# Voice Signal Preprocessing Functions
+# ============================================================================
+
+def read_voice_data(txt_file: str, hea_file: str) -> Tuple[np.ndarray, int]:
+    """Read voice signal data from .txt file and sampling rate from .hea file"""
+    # Read sampling rate from header
+    try:
+        with open(hea_file, 'r', encoding='utf-8', errors='ignore') as f:
+            header_line = f.readline().strip()
+            parts = header_line.split()
+            record_name = parts[0]
+            n_leads = int(parts[1])
+            sampling_rate = int(parts[2])
+            n_samples = int(parts[3])
+    except Exception as e:
+        print(f"Error reading header file {hea_file}: {e}")
+        return None, None
+    
+    print(f"Reading {record_name}: {n_leads} leads, {sampling_rate}Hz, {n_samples} samples")
+    
+    # Read signal data from txt file with error handling
+    voice_signal = []
+    try:
+        # Try UTF-8 first
+        with open(txt_file, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f):
+                line = line.strip()
+                if line:
+                    try:
+                        value = float(line)
+                        if not np.isnan(value) and not np.isinf(value):
+                            voice_signal.append(value)
+                        else:
+                            print(f"Warning: Invalid value at line {line_num}: {line}")
+                            voice_signal.append(0.0)
+                    except ValueError:
+                        print(f"Warning: Could not convert line {line_num} to float: {line}")
+                        voice_signal.append(0.0)
+    except UnicodeDecodeError:
+        try:
+            # Try latin-1 if UTF-8 fails
+            with open(txt_file, 'r', encoding='latin-1') as f:
+                for line_num, line in enumerate(f):
+                    line = line.strip()
+                    if line:
+                        try:
+                            value = float(line)
+                            if not np.isnan(value) and not np.isinf(value):
+                                voice_signal.append(value)
+                            else:
+                                print(f"Warning: Invalid value at line {line_num}: {line}")
+                                voice_signal.append(0.0)
+                        except ValueError:
+                            print(f"Warning: Could not convert line {line_num} to float: {line}")
+                            voice_signal.append(0.0)
+        except UnicodeDecodeError:
+            # Try with no encoding specified (binary mode)
+            with open(txt_file, 'r', errors='ignore') as f:
+                for line_num, line in enumerate(f):
+                    line = line.strip()
+                    if line:
+                        try:
+                            value = float(line)
+                            if not np.isnan(value) and not np.isinf(value):
+                                voice_signal.append(value)
+                            else:
+                                print(f"Warning: Invalid value at line {line_num}: {line}")
+                                voice_signal.append(0.0)
+                        except ValueError:
+                            print(f"Warning: Could not convert line {line_num} to float: {line}")
+                            voice_signal.append(0.0)
+    except Exception as e:
+        print(f"Error reading txt file {txt_file}: {e}")
+        return None, None
+    
+    if len(voice_signal) == 0:
+        print(f"Error: No valid data read from {txt_file}")
+        return None, None
+    
+    voice_signal = np.array(voice_signal)
+    
+    # Check for NaN or Inf values
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print(f"Warning: NaN/Inf values found in {txt_file}, replacing with zeros")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Ensure we have the expected number of samples
+    if len(voice_signal) >= n_samples:
+        voice_signal = voice_signal[:n_samples]
+    else:
+        print(f"Warning: Expected {n_samples} values, got {len(voice_signal)}")
+    
+    return voice_signal, sampling_rate
+
+def read_voice_metadata(info_file: str) -> Dict[str, Union[str, int, float]]:
+    """Read voice signal metadata from info file"""
+    metadata = {}
+    
+    with open(info_file, 'r') as f:
+        lines = f.readlines()
+    
+    for line in lines:
+        line = line.strip()
+        if ':' in line and not line.startswith('#'):
+            # Split on first colon only to handle values that might contain colons
+            parts = line.split(':', 1)
+            if len(parts) == 2:
+                key = parts[0].strip()
+                value = parts[1].strip()
+                
+                # Skip empty values
+                if not value or value == '':
+                    continue
+                
+                # Convert numeric values
+                if value.replace('.', '').replace(',', '').replace('-', '').isdigit():
+                    # Handle comma as decimal separator (e.g., "1,5" -> 1.5)
+                    if ',' in value and '.' not in value:
+                        value = value.replace(',', '.')
+                    value = float(value)
+                    # Convert to int if it's a whole number
+                    if value.is_integer():
+                        value = int(value)
+                elif value.lower() in ['yes', 'no', 'true', 'false']:
+                    # Keep boolean-like values as strings
+                    value = value.lower()
+                elif value.upper() == 'NU':
+                    # Handle missing values
+                    value = None
+                else:
+                    # Keep other values as strings
+                    value = value
+                
+                metadata[key] = value
+    
+    return metadata
+
+def preprocess_voice_signal(
+    voice_signal: np.ndarray, 
+    sampling_rate: int, 
+    target_length: int = 5000,
+    low_freq: float = 80.0,
+    high_freq: float = 3400.0,
+    gaussian_sigma: float = 1.0  # 添加高斯平滑参数
+) -> np.ndarray:
+    """
+    Preprocess voice signal with filtering, normalization, and uniform sampling.
+    
+    Args:
+        voice_signal: Input voice signal
+        sampling_rate: Sampling rate in Hz
+        target_length: Target length for uniform sampling
+        low_freq: Low frequency cutoff for bandpass filter
+        high_freq: High frequency cutoff for bandpass filter
+        gaussian_sigma: Standard deviation for Gaussian smoothing
+        
+    Returns:
+        Preprocessed voice signal
+    """
+    # Check for invalid input
+    if voice_signal is None or len(voice_signal) == 0:
+        print("Error: Empty or None voice signal")
+        return np.zeros(target_length)
+    
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print("Warning: Input signal contains NaN or Inf values")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Remove DC component
+    voice_signal = voice_signal - np.mean(voice_signal)
+    
+    # Check after DC removal
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print("Warning: NaN/Inf values after DC removal")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Apply bandpass filter
+    nyquist = sampling_rate / 2
+    low = low_freq / nyquist
+    high = high_freq / nyquist
+    
+    # Check filter parameters
+    if low >= high or low <= 0 or high >= 1:
+        print(f"Warning: Invalid filter parameters: low={low}, high={high}")
+        low = 0.01
+        high = 0.99
+    
+    try:
+        b, a = signal.butter(4, [low, high], btype='band')
+        voice_signal = signal.filtfilt(b, a, voice_signal)
+    except Exception as e:
+        print(f"Error in bandpass filtering: {e}")
+        # Skip filtering if it fails
+    
+    # Check after filtering
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print("Warning: NaN/Inf values after filtering")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Apply Gaussian smoothing
+    if gaussian_sigma > 0:
+        try:
+            # Create Gaussian kernel
+            kernel_size = int(3 * gaussian_sigma) * 2 + 1  # Ensure odd size
+            kernel_size = max(3, min(kernel_size, 21))  # Limit kernel size between 3 and 21
+            x = np.arange(-kernel_size//2, kernel_size//2 + 1)
+            kernel = np.exp(-(x**2) / (2 * gaussian_sigma**2))
+            kernel = kernel / np.sum(kernel)  # Normalize
+            
+            # Apply smoothing
+            voice_signal = np.convolve(voice_signal, kernel, mode='same')
+        except Exception as e:
+            print(f"Error in Gaussian smoothing: {e}")
+            # Skip smoothing if it fails
+    
+    # Check after smoothing
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print("Warning: NaN/Inf values after smoothing")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Normalize
+    if np.std(voice_signal) > 0:
+        voice_signal = (voice_signal - np.mean(voice_signal)) / np.std(voice_signal)
+    else:
+        print("Warning: Zero standard deviation, skipping normalization")
+    
+    # Check after normalization
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print("Warning: NaN/Inf values after normalization")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Uniform sampling
+    if len(voice_signal) != target_length:
+        indices = np.linspace(0, len(voice_signal) - 1, target_length, dtype=int)
+        voice_signal = voice_signal[indices]
+    
+    # Final check
+    if np.isnan(voice_signal).any() or np.isinf(voice_signal).any():
+        print("Warning: Final signal contains NaN/Inf values, replacing with zeros")
+        voice_signal = np.nan_to_num(voice_signal, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    return voice_signal
+
+def process_voice_file(
+    txt_file: str, 
+    hea_file: str, 
+    info_file: str,
+    output_dir: str,
+    target_length: int = 5000  # Changed to 5000 points
+) -> Dict[str, Union[str, np.ndarray, Dict]]:
+    """
+    Process a single voice file and save preprocessed data.
+    
+    Args:
+        txt_file: Path to .txt file (ASCII signal data)
+        hea_file: Path to .hea file (header with sampling rate)
+        info_file: Path to -info.txt file
+        output_dir: Output directory for processed data
+        target_length: Target length of processed signal (number of points)
+    
+    Returns:
+        Dictionary containing processed data and metadata
+    """
+    # Read voice data
+    signal, sampling_rate = read_voice_data(txt_file, hea_file)
+    
+    if signal is None or sampling_rate is None:
+        print(f"Error: Failed to read voice data from {txt_file}")
+        return None
+    
+    # Read metadata
+    try:
+        metadata = read_voice_metadata(info_file)
+    except Exception as e:
+        print(f"Warning: Error reading metadata from {info_file}: {e}")
+        metadata = {}
+    
+    # Preprocess signal
+    processed_signal = preprocess_voice_signal(
+        signal, sampling_rate, target_length
+    )
+    
+    if processed_signal is None:
+        print(f"Error: Failed to preprocess signal from {txt_file}")
+        return None
+    
+    # Save processed data
+    record_name = Path(txt_file).stem
+    output_file = Path(output_dir) / f"{record_name}.npy"
+    np.save(output_file, processed_signal)
+    
+    return {
+        'record_name': record_name,
+        'signal': processed_signal,
+        'metadata': metadata,
+        'output_file': str(output_file)
+    }
+
+def process_all_voice_signals(
+    input_dir: str, 
+    output_dir: str, 
+    target_length: int = 5000  # Changed to 5000 points
+) -> int:
+    """
+    Process all voice files in the input directory.
+    
+    Args:
+        input_dir: Input directory containing voice files
+        output_dir: Output directory for processed data
+        target_length: Target length of processed signals (number of points)
+    
+    Returns:
+        Number of successfully processed files
+    """
+    input_path = Path(input_dir)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Read RECORDS file
+    records_file = input_path / "RECORDS"
+    if not records_file.exists():
+        print(f"RECORDS file not found in {input_dir}")
+        return 0
+    
+    with open(records_file, 'r') as f:
+        record_names = [line.strip() for line in f.readlines()]
+    
+    processed_count = 0
+    
+    for record_name in record_names:
+        txt_file = input_path / f"{record_name}.txt"
+        hea_file = input_path / f"{record_name}.hea"
+        info_file = input_path / f"{record_name}-info.txt"
+        
+        # Check if all required files exist
+        if not all(f.exists() for f in [txt_file, hea_file, info_file]):
+            print(f"Missing files for {record_name}")
+            continue
+        
+        try:
+            result = process_voice_file(
+                str(txt_file), str(hea_file), str(info_file),
+                str(output_path), target_length
+            )
+            if result is not None:
+                processed_count += 1
+                print(f"Processed {record_name}")
+            else:
+                print(f"Failed to process {record_name}")
+        except Exception as e:
+            print(f"Error processing {record_name}: {e}")
+    
+    print(f"Total: {processed_count} voice files processed")
+    return processed_count
+
+def create_voice_labels_file(
+    input_dir: str, 
+    output_file: str,
+    target_variable: str = 'VHI Score'
+) -> pd.DataFrame:
+    """
+    Create labels file for voice data based on metadata.
+    
+    Args:
+        input_dir: Input directory containing voice files
+        output_file: Output CSV file for labels
+        target_variable: Target variable from metadata to use as label
+                        Options: 'VHI Score', 'RSI Score', 'Age', 'Diagnosis'
+    
+    Returns:
+        DataFrame with all metadata fields, target variable renamed to 'y'
+    """
+    input_path = Path(input_dir)
+    
+    # Read RECORDS file
+    records_file = input_path / "RECORDS"
+    if not records_file.exists():
+        print(f"RECORDS file not found in {input_dir}")
+        return pd.DataFrame()
+    
+    with open(records_file, 'r') as f:
+        record_names = [line.strip() for line in f.readlines()]
+    
+    labels_data = []
+    available_variables = set()
+    
+    for record_name in record_names:
+        info_file = input_path / f"{record_name}-info.txt"
+        
+        if not info_file.exists():
+            print(f"Info file not found for {record_name}")
+            continue
+        
+        try:
+            metadata = read_voice_metadata(str(info_file))
+            available_variables.update(metadata.keys())
+            
+            # Check if target variable exists
+            if target_variable not in metadata:
+                print(f"Target variable '{target_variable}' not found for {record_name}")
+                continue
+            
+            # Skip if target variable is None (missing data)
+            if metadata[target_variable] is None:
+                print(f"Missing {target_variable} for {record_name}")
+                continue
+            
+            # Create row with all metadata
+            row_data = {
+                'id': record_name,
+                **metadata  # Include all metadata fields
+            }
+            
+            # Rename target variable to 'y'
+            if target_variable in row_data:
+                row_data['y'] = row_data.pop(target_variable)
+            
+            labels_data.append(row_data)
+            
+        except Exception as e:
+            print(f"Error reading metadata for {record_name}: {e}")
+    
+    # Create DataFrame and save
+    labels_df = pd.DataFrame(labels_data)
+    
+    if not labels_df.empty:
+        # Reorder columns to put 'id' and 'y' first
+        columns = ['id', 'y'] + [col for col in labels_df.columns if col not in ['id', 'y']]
+        labels_df = labels_df[columns]
+        
+        labels_df.to_csv(output_file, index=False)
+        
+        print(f"Created labels file with {len(labels_df)} samples")
+        print(f"Target variable: {target_variable} (renamed to 'y')")
+        print(f"All available fields: {list(labels_df.columns)}")
+        
+        # Print label distribution
+        if target_variable == 'Diagnosis':
+            print(f"Diagnosis distribution:")
+            print(labels_df['y'].value_counts())
+        else:
+            print(f"Label distribution:\n{labels_df['y'].describe()}")
+        
+        # Print sample of the data
+        print(f"\nSample of labels data:")
+        print(labels_df.head())
+        
+    else:
+        print(f"No valid labels found for target variable: {target_variable}")
+    
+    return labels_df
+
+def visualize_voice_preprocessing(
+    txt_file: str, 
+    hea_file: str,
+    target_length: int = 5000,
+    gaussian_sigma: float = 1.0
+) -> None:
+    """
+    Visualize voice signal preprocessing steps.
+    
+    Args:
+        txt_file: Path to .txt file (ASCII signal data)
+        hea_file: Path to .hea file (header with sampling rate)
+        target_length: Target length for processing (number of points)
+        gaussian_sigma: Standard deviation for Gaussian smoothing
+    """
+    # Read voice data using the updated function
+    voice_signal, sampling_rate = read_voice_data(txt_file, hea_file)
+    
+    # Calculate the middle 5% region
+    total_points = len(voice_signal)
+    middle_start = int(total_points * 0.475)  # Start at 47.5%
+    middle_end = int(total_points * 0.525)    # End at 52.5%
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(4, 1, figsize=(15, 16))
+    
+    # Original signal (middle 5%)
+    time_axis_original = np.arange(len(voice_signal)) / sampling_rate
+    time_middle = time_axis_original[middle_start:middle_end]
+    signal_middle = voice_signal[middle_start:middle_end]
+    
+    axes[0].plot(time_middle, signal_middle)
+    axes[0].set_title('Original Voice Signal (Middle 5%)')
+    axes[0].set_xlabel('Time (s)')
+    axes[0].set_ylabel('Amplitude')
+    axes[0].grid(True)
+    
+    # After DC removal and bandpass filtering
+    voice_signal_no_dc = voice_signal - np.mean(voice_signal)
+    nyquist = sampling_rate / 2
+    low = 80.0 / nyquist
+    high = 3400.0 / nyquist
+    b, a = signal.butter(4, [low, high], btype='band')
+    voice_signal_filtered = signal.filtfilt(b, a, voice_signal_no_dc)
+    
+    signal_filtered_middle = voice_signal_filtered[middle_start:middle_end]
+    axes[1].plot(time_middle, signal_filtered_middle)
+    axes[1].set_title('After DC Removal and Bandpass Filter (80-3400 Hz) - Middle 5%')
+    axes[1].set_xlabel('Time (s)')
+    axes[1].set_ylabel('Amplitude')
+    axes[1].grid(True)
+    
+    # After Gaussian smoothing
+    if gaussian_sigma > 0:
+        kernel_size = int(3 * gaussian_sigma) * 2 + 1
+        kernel_size = max(3, min(kernel_size, 21))
+        x = np.arange(-kernel_size//2, kernel_size//2 + 1)
+        kernel = np.exp(-(x**2) / (2 * gaussian_sigma**2))
+        kernel = kernel / np.sum(kernel)
+        voice_signal_smoothed = np.convolve(voice_signal_filtered, kernel, mode='same')
+    else:
+        voice_signal_smoothed = voice_signal_filtered
+    
+    signal_smoothed_middle = voice_signal_smoothed[middle_start:middle_end]
+    axes[2].plot(time_middle, signal_smoothed_middle)
+    axes[2].set_title(f'After Gaussian Smoothing (σ={gaussian_sigma}, kernel_size={kernel_size}) - Middle 5%')
+    axes[2].set_xlabel('Time (s)')
+    axes[2].set_ylabel('Amplitude')
+    axes[2].grid(True)
+    
+    # Final preprocessed signal (normalized and uniformly sampled)
+    if np.std(voice_signal_smoothed) > 0:
+        voice_signal_normalized = (voice_signal_smoothed - np.mean(voice_signal_smoothed)) / np.std(voice_signal_smoothed)
+    else:
+        voice_signal_normalized = voice_signal_smoothed
+    
+    # Uniform sampling
+    indices = np.linspace(0, len(voice_signal_normalized) - 1, target_length, dtype=int)
+    voice_signal_final = voice_signal_normalized[indices]
+    
+    # Calculate time axis for final signal and get middle 5%
+    original_duration = len(voice_signal) / sampling_rate
+    time_axis_final = np.linspace(0, original_duration, target_length)
+    final_middle_start = int(target_length * 0.475)
+    final_middle_end = int(target_length * 0.525)
+    time_final_middle = time_axis_final[final_middle_start:final_middle_end]
+    signal_final_middle = voice_signal_final[final_middle_start:final_middle_end]
+    
+    axes[3].plot(time_final_middle, signal_final_middle)
+    axes[3].set_title(f'Final Preprocessed Signal (Normalized, {target_length} points) - Middle 5%')
+    axes[3].set_xlabel('Time (s)')
+    axes[3].set_ylabel('Amplitude')
+    axes[3].grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print processing statistics
+    print(f"Processing Statistics:")
+    print(f"Original signal length: {len(voice_signal)} points")
+    print(f"Original duration: {len(voice_signal) / sampling_rate:.2f} seconds")
+    print(f"Sampling rate: {sampling_rate} Hz")
+    print(f"Gaussian kernel size: {kernel_size}")
+    print(f"Final signal length: {len(voice_signal_final)} points")
+    print(f"Signal range after processing: [{voice_signal_final.min():.3f}, {voice_signal_final.max():.3f}]")
+    print(f"Displayed region: Middle 5% ({middle_start}-{middle_end} points)")
 
