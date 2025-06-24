@@ -30,7 +30,8 @@ class MedicalCNN(nn.Module):
         num_classes: int = 2,
         num_conv_layers: int = 4,
         conv_channels: int = 32,
-        fc_layers: List[int] = [512, 128]
+        fc_layers: List[int] = [512, 128],
+        input_size: int = 224  # Add input_size parameter for flexibility
     ):
         super(MedicalCNN, self).__init__()
         
@@ -48,10 +49,11 @@ class MedicalCNN(nn.Module):
         
         self.conv_layers = nn.Sequential(*conv_modules)
         
-        # Calculate the size of flattened features
-        # Assuming input size is 224x224, after num_conv_layers maxpooling layers
-        # the feature map size will be 224/(2^num_conv_layers)
-        feature_size = 224 // (2 ** num_conv_layers)
+        # Calculate the size of flattened features more accurately
+        # After each maxpool layer, the feature map size is halved
+        feature_size = input_size // (2 ** num_conv_layers)
+        # Ensure feature_size is at least 1
+        feature_size = max(1, feature_size)
         flattened_size = conv_channels * feature_size * feature_size
         
         # Build fully connected layers
@@ -74,6 +76,7 @@ class MedicalCNN(nn.Module):
         
         self.fc_layers = nn.Sequential(*fc_modules)
         self.task_type = task_type
+        self.input_size = input_size
         
         # Initialize weights
         self._initialize_weights()
@@ -118,26 +121,31 @@ class ECG1DCNN(nn.Module):
         # Build 1D convolutional layers
         conv_modules = []
         in_channels = 1  # Single ECG channel
+        current_channels = conv_channels
+        self.input_length = input_length
         
         for _ in range(num_conv_layers):
             conv_modules.extend([
-                nn.Conv1d(in_channels, conv_channels, kernel_size=kernel_size, stride=1, padding=kernel_size//2),
-                nn.BatchNorm1d(conv_channels),
+                nn.Conv1d(in_channels, current_channels, kernel_size=kernel_size, stride=1, padding=kernel_size//2),
+                nn.BatchNorm1d(current_channels),
                 nn.ReLU(),
                 nn.MaxPool1d(pool_size),
                 nn.Dropout(0.2)
             ])
-            in_channels = conv_channels
+            in_channels = current_channels
             # Double channels every second layer
-            if len(conv_modules) % 10 == 0:  # Every 2 conv layers (5 modules each)
-                conv_channels = min(conv_channels * 2, 512)
+            if(len(conv_modules) + 1) % 10 == 0 and (_ != num_conv_layers-1):  # Every 2 conv layers (5 modules each)
+                current_channels = min(current_channels * 2, 512)
         
         self.conv_layers = nn.Sequential(*conv_modules)
         
-        # Calculate the size of flattened features
+        # Calculate the size of flattened features more accurately
         # After num_conv_layers maxpool operations, length is divided by pool_size^num_conv_layers
+        
         feature_length = input_length // (pool_size ** num_conv_layers)
-        flattened_size = conv_channels * feature_length
+        # Ensure feature_length is at least 1
+        feature_length = max(1, feature_length)
+        flattened_size = current_channels * feature_length
         
         # Build fully connected layers
         fc_modules = []
@@ -206,30 +214,33 @@ class Voice1DCNN(nn.Module):
         # Build 1D convolutional layers optimized for voice signals
         conv_modules = []
         in_channels = 1  # Single voice channel
+        current_channels = conv_channels
         
         for i in range(num_conv_layers):
             # Use larger kernels for early layers to capture broader patterns
             current_kernel = kernel_size if i < 2 else max(3, kernel_size // 2)
             
             conv_modules.extend([
-                nn.Conv1d(in_channels, conv_channels, kernel_size=current_kernel, 
+                nn.Conv1d(in_channels, current_channels, kernel_size=current_kernel, 
                          stride=1, padding=current_kernel//2),
-                nn.BatchNorm1d(conv_channels),
+                nn.BatchNorm1d(current_channels),
                 nn.ReLU(),
                 nn.MaxPool1d(pool_size),
                 nn.Dropout(0.2)
             ])
-            in_channels = conv_channels
+            in_channels = current_channels
             # Increase channels progressively
-            if i % 2 == 1:  # Every second layer
-                conv_channels = min(conv_channels * 2, 256)
+            if i % 2 == 1 and i != num_conv_layers-1:  # Every second layer
+                current_channels = min(current_channels * 2, 256)
         
         self.conv_layers = nn.Sequential(*conv_modules)
         
-        # Calculate the size of flattened features
+        # Calculate the size of flattened features more accurately
         # After num_conv_layers maxpool operations, length is divided by pool_size^num_conv_layers
         feature_length = input_length // (pool_size ** num_conv_layers)
-        flattened_size = conv_channels * feature_length
+        # Ensure feature_length is at least 1
+        feature_length = max(1, feature_length)
+        flattened_size = current_channels * feature_length
         
         # Build fully connected layers
         fc_modules = []
@@ -428,8 +439,10 @@ class ModelTrainer:
             
             # Store predictions and labels
             if self.task_type == 'classification':
-                _, predicted = outputs.max(1)
+                # For classification: outputs are logits, use max to get predictions
+                _, predicted = torch.max(outputs, 1)
             else:
+                # For regression: outputs are direct predictions
                 predicted = outputs
             
             # Convert to numpy arrays and ensure they are 1D
@@ -472,8 +485,10 @@ class ModelTrainer:
                 
                 # Store predictions and labels
                 if self.task_type == 'classification':
-                    _, predicted = outputs.max(1)
+                    # For classification: outputs are logits, use max to get predictions
+                    _, predicted = torch.max(outputs, 1)
                 else:
+                    # For regression: outputs are direct predictions
                     predicted = outputs
                 
                 # Convert to numpy arrays and ensure they are 1D
@@ -721,8 +736,10 @@ class ModelTrainer:
                     outputs = outputs.squeeze()
                 
                 if self.task_type == 'classification':
-                    _, predicted = outputs.max(1)
+                    # For classification: outputs are logits, use max to get predictions
+                    _, predicted = torch.max(outputs, 1)
                 else:
+                    # For regression: outputs are direct predictions
                     predicted = outputs
                 
                 # Convert to numpy arrays and ensure they are 1D
@@ -787,8 +804,9 @@ class ModelTrainer:
                     print(f"First batch - Outputs sample: {outputs[:2]}")
                 
                 if self.task_type == 'classification':
+                    # For classification: outputs are logits, need softmax for probabilities
                     probs = torch.softmax(outputs, dim=1)
-                    _, predicted = outputs.max(1)
+                    _, predicted = torch.max(outputs, 1)  # Use logits for prediction
                     all_probs.extend(probs.cpu().numpy())  # Keep 2D shape for probabilities
                     all_preds.extend(predicted.detach().cpu().numpy().flatten())
                     
@@ -797,6 +815,7 @@ class ModelTrainer:
                         print(f"First batch - Probs sample: {probs[:2]}")
                         print(f"First batch - Predicted sample: {predicted[:5]}")
                 else:
+                    # For regression: outputs are direct predictions
                     outputs = outputs.squeeze()
                     all_preds.extend(outputs.cpu().numpy().flatten())
                     all_probs.extend(outputs.cpu().numpy().flatten())  # For regression, probs are the same as predictions
