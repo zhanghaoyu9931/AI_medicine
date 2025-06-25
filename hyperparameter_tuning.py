@@ -96,7 +96,7 @@ class HyperparameterTuner:
         self,
         param_grid: Dict[str, List[Any]] = None,
         num_epochs: int = 50,
-        early_stopping_patience: int = 5
+        early_stopping_patience: int = 15
     ) -> Dict[str, Any]:
         """Perform grid search over hyperparameters."""
         if param_grid is None:
@@ -133,6 +133,7 @@ class HyperparameterTuner:
                 save_dir=str(self.save_dir / f"combination_{i+1}"),
                 early_stopping_patience=early_stopping_patience
             )
+            trainer.plot_training_history(str(self.save_dir / f"combination_{i+1}"))
             
             # Get best validation metrics
             best_val_loss = min(trainer.val_losses)

@@ -22,6 +22,8 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+debug_mode = False
+
 class MedicalCNN(nn.Module):
     """CNN model for medical image classification/regression."""
     def __init__(
@@ -31,7 +33,8 @@ class MedicalCNN(nn.Module):
         num_conv_layers: int = 4,
         conv_channels: int = 32,
         fc_layers: List[int] = [512, 128],
-        input_size: int = 224  # Add input_size parameter for flexibility
+        input_size: int = 224,  # Add input_size parameter for flexibility
+        dropout_rate: float = 0.2,
     ):
         super(MedicalCNN, self).__init__()
         
@@ -42,8 +45,10 @@ class MedicalCNN(nn.Module):
         for _ in range(num_conv_layers):
             conv_modules.extend([
                 nn.Conv2d(in_channels, conv_channels, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(conv_channels),
                 nn.ReLU(),
-                nn.MaxPool2d(2)
+                nn.MaxPool2d(2),
+                nn.Dropout(dropout_rate)
             ])
             in_channels = conv_channels
         
@@ -63,8 +68,9 @@ class MedicalCNN(nn.Module):
         for fc_size in fc_layers:
             fc_modules.extend([
                 nn.Linear(prev_size, fc_size),
+                nn.BatchNorm1d(fc_size),
                 nn.ReLU(),
-                nn.Dropout(0.5)
+                nn.Dropout(dropout_rate)
             ])
             prev_size = fc_size
         
@@ -455,6 +461,9 @@ class ModelTrainer:
             # Update progress bar with current loss
             train_pbar.set_postfix({'Loss': f'{current_loss:.4f}'})
         
+        if debug_mode:
+            print('Example preds and labels', all_preds[:10], all_labels[:10])
+        
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
         epoch_loss = total_loss / len(train_loader)
@@ -568,7 +577,7 @@ class ModelTrainer:
         val_loader: DataLoader,
         num_epochs: int,
         save_dir: str,
-        early_stopping_patience: int = 5
+        early_stopping_patience: int = 15
     ) -> Dict[str, List[Union[float, Dict[str, float]]]]:
         """Train the model for specified number of epochs."""
         best_val_loss = float('inf')
@@ -675,19 +684,28 @@ class ModelTrainer:
         with open(Path(save_dir) / 'training_history.json', 'w') as f:
             json.dump(history, f, indent=4)
     
-    def plot_training_history(self, save_dir: str) -> None:
-        """Plot training history."""
+    def plot_training_history(self, save_dir: str, start_epoch: int = 5) -> None:
+        """Plot training history.
+        
+        Args:
+            save_dir: Directory to save the plot
+            start_epoch: Starting epoch to display (default: 5)
+        """
         if not self.train_losses or not self.val_losses:
             print("Warning: No training history to plot")
             return
-            
+        
+        # Adjust start_epoch to be within valid range
+        start_epoch = max(0, min(start_epoch, len(self.train_losses) - 1))
+        
         plt.figure(figsize=(15, 5))
         
         # Plot losses
         plt.subplot(1, 3, 1)
-        plt.plot(self.train_losses, label='Train Loss')
-        plt.plot(self.val_losses, label='Val Loss')
-        plt.title('Training and Validation Loss')
+        epochs = range(start_epoch, len(self.train_losses))
+        plt.plot(epochs, self.train_losses[start_epoch:], label='Train Loss')
+        plt.plot(epochs, self.val_losses[start_epoch:], label='Val Loss')
+        # plt.title('Training and Validation Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.legend()
@@ -701,10 +719,10 @@ class ModelTrainer:
         for i, metric in enumerate(metrics, 2):
             plt.subplot(1, 3, i)
             try:
-                train_metric = [m.get(metric, 0.0) for m in self.train_metrics]
-                val_metric = [m.get(metric, 0.0) for m in self.val_metrics]
-                plt.plot(train_metric, label=f'Train {metric.upper()}')
-                plt.plot(val_metric, label=f'Val {metric.upper()}')
+                train_metric = [m.get(metric, 0.0) for m in self.train_metrics[start_epoch:]]
+                val_metric = [m.get(metric, 0.0) for m in self.val_metrics[start_epoch:]]
+                plt.plot(epochs, train_metric, label=f'Train {metric.upper()}')
+                plt.plot(epochs, val_metric, label=f'Val {metric.upper()}')
                 # plt.title(f'Training and Validation {metric.upper()}')
                 plt.xlabel('Epoch')
                 plt.ylabel(metric.upper())
