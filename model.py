@@ -297,6 +297,64 @@ class Voice1DCNN(nn.Module):
         x = self.fc_layers(x)
         return x
 
+class ASDTabularModel(nn.Module):
+    """Multi-layer Perceptron model for ASD tabular data classification/regression."""
+    def __init__(
+        self,
+        task_type: Literal['classification', 'regression'],
+        input_dim: int,
+        num_classes: int = 2,
+        hidden_layers: List[int] = [512, 256, 128],
+        dropout_rate: float = 0.5,
+        use_batch_norm: bool = True
+    ):
+        super(ASDTabularModel, self).__init__()
+        
+        self.task_type = task_type
+        self.input_dim = input_dim
+        
+        # Build fully connected layers
+        layers = []
+        prev_dim = input_dim
+        
+        for hidden_dim in hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            prev_dim = hidden_dim
+        
+        # Add final layer based on task type
+        if task_type == 'classification':
+            layers.append(nn.Linear(prev_dim, num_classes))
+        else:  # regression
+            layers.append(nn.Linear(prev_dim, 1))
+        
+        self.layers = nn.Sequential(*layers)
+        
+        # Initialize weights
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize model weights for better convergence."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                # Initialize batch norm parameters
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the network."""
+        return self.layers(x)
+
 class ModelTrainer:
     """Class to handle model training and evaluation."""
     def __init__(
@@ -852,50 +910,73 @@ class ModelTrainer:
         return all_labels, all_preds, all_probs
 
 def extract_features_for_ml(model: nn.Module, data_loader: DataLoader, device: torch.device, debug: bool = False) -> Tuple[np.ndarray, np.ndarray]:
-    """Extract features from CNN for traditional ML models."""
+    """Extract features from model for traditional ML models."""
     model.eval()
     features = []
     labels = []
     
     if debug:
         print(f"Extracting features from model on device: {device}")
+        print(f"Model type: {type(model).__name__}")
     
     # Add progress bar for feature extraction
     feature_pbar = tqdm(data_loader, desc='Extracting Features', leave=False,
                        bar_format='{l_bar}{bar:30}{r_bar}', ncols=100)
     
     with torch.no_grad():
-        for batch_idx, (images, targets) in enumerate(feature_pbar):
-            images = images.to(device)
+        for batch_idx, (data, targets) in enumerate(feature_pbar):
+            data = data.to(device)
             
             if debug and batch_idx == 0:  # Debug first batch
-                print(f"Feature extraction - Images shape: {images.shape}")
+                print(f"Feature extraction - Data shape: {data.shape}")
                 print(f"Feature extraction - Targets shape: {targets.shape}")
                 print(f"Feature extraction - Targets sample: {targets[:5]}")
             
-            # Extract features from the CNN (before the final layer)
-            x = images
-            if x.dim() == 3:
-                x = x.unsqueeze(1)
+            # Handle different model types
+            if isinstance(model, ASDTabularModel):
+                # For tabular models, extract features from all but the last layer
+                x = data
+                # for i, layer in enumerate(model.layers[:1]): # 只用第一层网络
+                #     x = layer(x)
+                #     if debug and batch_idx == 0 and i < 3:  # Debug first few layers
+                #         print(f"After layer {i} - Features shape: {x.shape}")
+                
+                # if debug and batch_idx == 0:
+                #     print(f"Final features shape: {x.shape}")
+                #     print(f"Features sample (first 5 dims): {x[0, :5]}")
+                
+                features.extend(x.cpu().numpy())
+                
+            else:
+                # For CNN models (image, ECG, voice)
+                x = data
+                if ((x.shape[-1] == x.shape[-2]) and (x.shape[-1] == 224) and (x.dim() == 3)):
+                    x = x.unsqueeze(1)
+                
+                # Forward through conv layers
+                if hasattr(model, 'conv_layers'):
+                    x = model.conv_layers(x)
+                    x = x.view(x.size(0), -1)
+                    
+                    if debug and batch_idx == 0:  # Debug first batch
+                        print(f"After conv layers - Features shape: {x.shape}")
+                    
+                    # # Forward through all but the last FC layer
+                    # if hasattr(model, 'fc_layers'):
+                    #     for i, layer in enumerate(model.fc_layers[:-1]):  # Exclude the final layer
+                    #         x = layer(x)
+                    #         if debug and batch_idx == 0 and i < 2:  # Debug first few layers
+                    #             print(f"After FC layer {i} - Features shape: {x.shape}")
+                else:
+                    # For models without conv_layers (should not happen with current models)
+                    x = data.view(data.size(0), -1)
+                
+                if debug and batch_idx == 0:  # Debug first batch
+                    print(f"Final features shape: {x.shape}")
+                    print(f"Features sample (first 5 dims): {x[0, :5]}")
+                
+                features.extend(x.cpu().numpy())
             
-            # Forward through conv layers
-            x = model.conv_layers(x)
-            x = x.view(x.size(0), -1)
-            
-            if debug and batch_idx == 0:  # Debug first batch
-                print(f"After conv layers - Features shape: {x.shape}")
-            
-            # Forward through all but the last FC layer
-            for i, layer in enumerate(model.fc_layers[:-1]):  # Exclude the final layer
-                x = layer(x)
-                if debug and batch_idx == 0 and i < 2:  # Debug first few layers
-                    print(f"After FC layer {i} - Features shape: {x.shape}")
-            
-            if debug and batch_idx == 0:  # Debug first batch
-                print(f"Final features shape: {x.shape}")
-                print(f"Features sample (first 5 dims): {x[0, :5]}")
-            
-            features.extend(x.cpu().numpy())
             labels.extend(targets.cpu().numpy().flatten())
     
     features_array = np.array(features)

@@ -19,9 +19,10 @@ class HyperparameterTuner:
         train_loader: DataLoader,
         val_loader: DataLoader,
         task_type: Literal['classification', 'regression'],
-        model_type: Literal['image', 'ECG', 'voice'] = 'image',  # Future: add 'image3d', 'rnn', 'transformer', etc.
+        model_type: Literal['image', 'ECG', 'voice', 'tabular'] = 'image',  # Future: add 'image3d', 'rnn', 'transformer', etc.
         num_classes: int = 2,
         input_length: int = 5000,  # For ECG and other sequence models
+        input_dim: int = None,  # For tabular data
         device: torch.device = None,
         save_dir: str = './grid_search_results'
     ):
@@ -31,6 +32,7 @@ class HyperparameterTuner:
         self.model_type = model_type
         self.num_classes = num_classes
         self.input_length = input_length
+        self.input_dim = input_dim
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
@@ -68,6 +70,15 @@ class HyperparameterTuner:
                 conv_channels=params['conv_channels'],
                 fc_layers=params['fc_layers']
             )
+        elif self.model_type == 'tabular':
+            from model import ASDTabularModel
+            model = ASDTabularModel(
+                task_type=self.task_type,
+                input_dim=self.input_dim,
+                num_classes=self.num_classes,
+                hidden_layers=params['hidden_layers'],
+                dropout_rate=params.get('dropout_rate', 0.5)
+            )
         # TODO: Add support for future model types here
         # elif self.model_type == 'image3d':
         #     model = Medical3DCNN(...)
@@ -76,7 +87,7 @@ class HyperparameterTuner:
         # elif self.model_type == 'transformer':
         #     model = MedicalTransformer(...)
         else:
-            raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: 'image', 'ECG', 'voice'")
+            raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: 'image', 'ECG', 'voice', 'tabular'")
         
         # Define loss function based on task type
         if self.task_type == 'classification':
@@ -100,12 +111,19 @@ class HyperparameterTuner:
     ) -> Dict[str, Any]:
         """Perform grid search over hyperparameters."""
         if param_grid is None:
-            param_grid = {
-                'num_conv_layers': [3, 4, 5],
-                'conv_channels': [32, 64, 128],
-                'fc_layers': [[512, 128], [256, 64], [1024, 256, 64]],
-                'learning_rate': [0.001, 0.0001]
-            }
+            if self.model_type == 'tabular':
+                param_grid = {
+                    'hidden_layers': [[512, 128], [256, 128, 64], [1024, 512, 256], [128, 64]],
+                    'dropout_rate': [0.3, 0.5, 0.7],
+                    'learning_rate': [0.001, 0.0001, 0.01]
+                }
+            else:
+                param_grid = {
+                    'num_conv_layers': [3, 4, 5],
+                    'conv_channels': [32, 64, 128],
+                    'fc_layers': [[512, 128], [256, 64], [1024, 256, 64]],
+                    'learning_rate': [0.001, 0.0001]
+                }
         
         # Generate all parameter combinations
         param_combinations = [dict(zip(param_grid.keys(), v)) 
